@@ -3,7 +3,7 @@ use std::{
     collections::HashMap,
     error::Error,
     fmt::Display,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
 };
 
@@ -177,43 +177,62 @@ impl Display for Method {
 //Sec-Fetch-User: ?1
 
 pub struct HTTPRequest {
-    method: Method,
-    url: String,
+    method: String,
+    target: String,
+    http_version: String,
     headers: HashMap<String, String>,
+    body: String,
     stream: TcpStream,
 }
 
 impl HTTPRequest {
     pub fn new(stream: TcpStream) -> Option<HTTPRequest> {
-        let reader = BufReader::new(&stream);
-        let request: Vec<_> = reader
-            .lines()
-            .map(|result| result.unwrap())
-            .take_while(|line| !line.is_empty())
-            .collect();
+        let mut bufreader = BufReader::new(stream);
+        let mut first_line = String::new();
+        bufreader.by_ref().read_line(&mut first_line).unwrap();
+        let mut first_line = first_line.split(' ');
+        let method = first_line.next().unwrap();
+        let target = first_line.next().unwrap();
+        let http_version = first_line.next().unwrap().trim_end();
+        let mut headers = HashMap::new();
 
-        if request.len() > 0 {
-            let request_line = &request[0];
-            let mut req_line_split = request_line.split(' ');
-            let method = Method::from(req_line_split.next().unwrap());
-            let endpoint = req_line_split.next().unwrap();
-            let mut headers = HashMap::new();
-
-            for line in request.iter().skip(1) {
-                let mut split = line.split(':');
-                let key = split.next().unwrap().to_string();
-                let value: String = split.next().unwrap().chars().skip(1).collect();
-                headers.insert(key, value);
+        let mut line = String::new();
+        while bufreader.by_ref().read_line(&mut line).unwrap() != 0 {
+            if line.is_empty() || !line.contains(": ") {
+                break;
             }
-            Some(HTTPRequest {
-                method,
-                url: endpoint.to_string(),
-                headers,
-                stream,
-            })
-        } else {
-            None
+            let mut line_split = line.split(": ");
+            let key = line_split.next().unwrap();
+            let value = line_split.next().unwrap().trim_end();
+            headers.insert(
+                key.to_string().to_lowercase(),
+                value.to_string().to_lowercase(),
+            );
+            line.clear();
         }
+
+        let mut body = String::new();
+        if headers.contains_key("content-length") {
+            let size_string = headers.get("content-length").unwrap();
+            println!("size_string: '{}'", size_string);
+            let size = headers
+                .get("content-length")
+                .unwrap()
+                .parse::<usize>()
+                .unwrap();
+            let mut buf = vec![0; size];
+            bufreader.read_exact(&mut buf).unwrap();
+            body = String::from_utf8(buf).unwrap();
+        }
+
+        Some(HTTPRequest {
+            method: method.to_string(),
+            target: target.to_string(),
+            http_version: http_version.to_string(),
+            headers,
+            body,
+            stream,
+        })
     }
 
     pub fn send(&mut self, text: &str) -> Result<(), Box<dyn Error>> {
@@ -234,35 +253,3 @@ impl HTTPRequest {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-
-//     #[test]
-//     fn parsing_http_request() {
-//         let test_entry = "GET / HTTP/1.1
-// Host: localhost:5000
-// User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/110.0
-// Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8
-// Accept-Language: en-US,en;q=0.5
-// Accept-Encoding: gzip, deflate, br
-// Connection: keep-alive
-// Upgrade-Insecure-Requests: 1
-// Sec-Fetch-Dest: document
-// Sec-Fetch-Mode: navigate
-// Sec-Fetch-Site: none
-// Sec-Fetch-User: ?1";
-//         let req = HttpRequest::from(test_entry);
-//         assert!(matches!(req.method, Method::GET));
-//         assert_eq!(req.uri, "localhost:5000/");
-//         assert_eq!(req.version, "1.1");
-
-//         let mut map = HashMap::new();
-//         //map.insert("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/110.0");
-//         //map.insert("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
-//         //map.insert("Accept-Language", "en-US,en;q=0.5");
-//         //map.insert("Accept-Encoding", "en-US,en;q=0.5");
-//         //map.insert("Connection", "keep-alive");
-//         assert_eq!(map, req.headers);
-//     }
-// }
